@@ -1,0 +1,12 @@
+library(cowplot)
+library(dplyr)
+library(Matrix)
+library(Seurat)
+library(RColorBrewer)
+library(harmony)
+
+####loading####
+#Aldh1l1;Ptbp1;Sun1
+#Male | Female
+#4wks post 4-OHT
+#FACS GFP
