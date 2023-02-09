@@ -1,0 +1,169 @@
+library(cowplot)
+library(dplyr)
+library(Matrix)
+library(Seurat)
+library(RColorBrewer)
+library(harmony)
+
+####loading####
+#Aldh1l1;Ptbp1;Sun1
+#Male | Female
+#FACS GFP
+#Midbrain sample
+
+TKF9 <- Read10X_h5("Ptbp1/Brain_Matrix_file/Ptbp1_FACS/TKF9/filtered_feature_bc_matrix.h5")
+TKF6 <- Read10X_h5("Ptbp1/Brain_Matrix_file/Ptbp1_FACS/TKF6/filtered_feature_bc_matrix.h5")
+TKG6 <- Read10X_h5("Ptbp1/Brain_Matrix_file/Ptbp1_FACS/TKG6/filtered_feature_bc_matrix.h5")
+TKG3 <- Read10X_h5("Ptbp1/Brain_Matrix_file/Ptbp1_FACS/TKG3/filtered_feature_bc_matrix.h5")
+
+#adding column names to avoid barcode clash
+colnames(TKF9) = paste0("TKF9_", colnames(TKF9))
+colnames(TKF6) = paste0("TKF6_", colnames(TKF6))
+colnames(TKG6) = paste0("TKG6_", colnames(TKG6))
+colnames(TKG3) = paste0("TKG3_", colnames(TKG3))
+
+#Create Seurat object. Cutoff 500 genes in 5 cells
+TKF9 <- CreateSeuratObject(counts = TKF9, project = "Ptbp1_GFP_Mid_WT1", min.cells = 5, min.features = 500)
+TKF6 <- CreateSeuratObject(counts = TKF6, project = "Ptbp1_GFP_Mid_HOM1", min.cells = 5, min.features = 500)
+TKG6 <- CreateSeuratObject(counts = TKG6, project = "Ptbp1_GFP_Mid_WT2", min.cells = 5, min.features = 500)
+TKG3 <- CreateSeuratObject(counts = TKG3, project = "Ptbp1_GFP_Mid_HOM2", min.cells = 5, min.features = 500)
+
+#Filter 
+TKF9 <- subset(TKF9, subset = nCount_RNA > 3000) 
+TKF6 <- subset(TKF6, subset = nCount_RNA > 3000)
+TKG6 <- subset(TKG6, subset = nCount_RNA > 3000)
+TKG3 <- subset(TKG3, subset = nCount_RNA > 3000)
+
+TKF9 <- subset(TKF9, subset = nCount_RNA < 40000) 
+TKF6 <- subset(TKF6, subset = nCount_RNA < 40000)
+TKG6 <- subset(TKG6, subset = nCount_RNA < 40000)
+TKG3 <- subset(TKG3, subset = nCount_RNA < 40000)
+
+###merge####
+P_Mid <- merge(x = TKF9, y = list(TKF6, TKG6, TKG3))
+rm(TKF9)
+rm(TKF6)
+rm(TKG6)
+rm(TKG3)
+
+P_Mid <- RenameIdents(P_Mid, "TKF9" = "WT_Mid", "TKF6" = "HOM_Mid",
+                      "TKG6" = "WT_Mid", "TKG3" = "HOM_Mid" )
+P_Mid <- AddMetaData(P_Mid, P_Mid@active.ident, "Genotype")
+
+Idents(P_Mid) <- "orig.ident"
+P_Mid <- RenameIdents(P_Mid, "TKF9" = "WT_Mid1", "TKF6" = "HOM_Mid1",
+                      "TKG6" = "WT_Mid2", "TKG3" = "HOM_Mid2" )
+P_Mid <- AddMetaData(P_Mid, P_Mid@active.ident, "Replicate")
+Idents(P_Mid) <- "Genotype"
+
+#check distribution of Mitochondrial genes, Ribosomal genes, and number of UMI (=nCount_RNA)
+P_Mid[["percent.mt"]] <- PercentageFeatureSet(P_Mid, pattern = "^mt-")
+P_Mid[["percent.RPS"]] <- PercentageFeatureSet(P_Mid, pattern = "^Rps")
+P_Mid[["percent.RPL"]] <- PercentageFeatureSet(P_Mid, pattern = "^Rpl")
+
+VlnPlot(P_Mid, features = c("nCount_RNA","nFeature_RNA",
+                            "percent.mt","percent.RPS","percent.RPL"),
+        pt.size = 0, group.by = "Replicate")
+
+#order
+my_levels <- c("WT_Mid", "HOM_Mid")
+P_Mid@active.ident <- factor(x = P_Mid@active.ident, levels = my_levels)
+
+#filter some rough values
+P_Mid <- subset(P_Mid, subset = percent.mt <50)
+P_Mid <- subset(P_Mid, subset = percent.RPS <20)
+
+####processing####
+P_Mid <- SCTransform(P_Mid, vars.to.regress = c("nCount_RNA","nFeature_RNA"))
+
+#Run PCA
+P_Mid <- RunPCA(P_Mid, npcs = 50, ndims.print = NA, verbose = F)
+
+####harmony####
+P_Mid <- RunHarmony(P_Mid, group.by.vars = "orig.ident", assay.use = "SCT", plot.convergence = T)
+P_Mid <- RunUMAP(P_Mid, reduction = "harmony", dims = 1:20,
+                 n.neighbours = 20L, min.dist = 0.01, spread = 1)
+DimPlot(P_Mid, reduction = "umap", label = F,pt.size = 0.5, cols = , 
+        split.by = "Genotype", ncol = 2) + NoLegend()
+P_Mid <- FindNeighbors(P_Mid, dims = 1:20, reduction = "harmony")
+P_Mid <- FindClusters(P_Mid, resolution = 0.4) #SCT_snn_res.0.8
+DimPlot(P_Mid, reduction = "umap", label = T, pt.size = 0.5) + NoLegend()
+
+markers <- FindAllMarkers(P_Mid, test.use = "wilcox",
+                          logfc.threshold = 0.2,
+                          min.pct = 0.1, verbose = T)
+write.csv(markers, file = "Ptbp1/CSV/DEG_P_FACS_Mid.csv")
+
+#Small doublet clusters - lack of any proneural/neurogenic genes + no difference between genotypes
+
+#0 Astrocyte
+#1 Astrocyte
+#2 Astrocyte
+#3 Astrocyte
+#4 Astrocyte
+#5 Astrocyte. High mt
+#6 Microglia. Doublet
+#7 Astrocyte
+#8 Neuron. Doublet
+#9 Microglia. Doublet
+#10 Doublet -  oligo
+#11 Doublet - msc
+#12 Doublet. High Fos cell
+
+P_Mid <- RenameIdents(P_Mid, "0" = "Astrocyte", "1" = "Astrocyte", "2" = "Astrocyte",
+                      "3" = "Astrocyte", "4" = "Astrocyte",
+                      "5" = "Astrocyte", "6" = "Doublet#1", "7" = "Astrocyte",
+                      "8" = "Doublet#2", "9" = "Doublet#3",
+                      "10" = "Doublet#4", "11" = "Doublet#5", "12" = "Doublet#6")
+Group <- sort(levels(P_Mid@active.ident))
+P_Mid <- AddMetaData(P_Mid, P_Mid@active.ident, "Clusters")
+P_Mid@active.ident <- factor(x = P_Mid@active.ident, levels = Group)
+P_Mid@meta.data$Clusters <- factor(x = P_Mid@meta.data$Clusters, levels = Group)
+DimPlot(P_Mid, reduction = "umap", label = T, pt.size = 0.5) + NoLegend()
+
+markers <- FindAllMarkers(P_Mid, test.use = "wilcox",
+                          logfc.threshold = 0.2,
+                          min.pct = 0.1, verbose = T)
+write.csv(markers, file = "Ptbp1/CSV/DEG_P_FACS_Mid2.csv")
+save(P_Mid, file = "Ptbp1/Robj/Ptbp1_FACS_Mid.Robj")
+
+> sessionInfo()
+R version 3.6.1 (2019-07-05)
+Platform: x86_64-w64-mingw32/x64 (64-bit)
+Running under: Windows 10 x64 (build 19044)
+
+Matrix products: default
+
+locale:
+[1] LC_COLLATE=English_United States.1252  LC_CTYPE=English_United States.1252   
+[3] LC_MONETARY=English_United States.1252 LC_NUMERIC=C                          
+[5] LC_TIME=English_United States.1252    
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+[1] harmony_1.0        Rcpp_1.0.7         RColorBrewer_1.1-2 Seurat_3.2.3       Matrix_1.2-17      dplyr_0.8.3       
+[7] cowplot_1.0.0     
+
+loaded via a namespace (and not attached):
+ [1] nlme_3.1-142         bitops_1.0-6         matrixStats_0.54.0   RcppAnnoy_0.0.18     httr_1.4.1          
+ [6] sctransform_0.3.2    tools_3.6.1          R6_2.4.0             irlba_2.3.3          rpart_4.1-15        
+[11] KernSmooth_2.23-16   uwot_0.1.10          mgcv_1.8-31          lazyeval_0.2.2       colorspace_1.4-1    
+[16] withr_2.1.2          npsurv_0.4-0         tidyselect_0.2.5     gridExtra_2.3        compiler_3.6.1      
+[21] plotly_4.9.0         labeling_0.3         caTools_1.17.1.2     scales_1.0.0         lmtest_0.9-37       
+[26] spatstat.data_2.1-0  ggridges_0.5.1       pbapply_1.4-1        spatstat_1.64-1      goftest_1.2-2       
+[31] stringr_1.4.0        digest_0.6.20        spatstat.utils_2.2-0 pkgconfig_2.0.2      htmltools_0.5.1.1   
+[36] htmlwidgets_1.3      rlang_0.4.10         rstudioapi_0.11      shiny_1.3.2          zoo_1.8-6           
+[41] jsonlite_1.6.1       ica_1.0-2            gtools_3.8.1         magrittr_1.5         patchwork_1.0.0.9000
+[46] munsell_0.5.0        abind_1.4-5          reticulate_1.13      lifecycle_0.1.0      stringi_1.4.3       
+[51] MASS_7.3-51.4        gplots_3.0.4         Rtsne_0.15           plyr_1.8.4           grid_3.6.1          
+[56] parallel_3.6.1       gdata_2.18.0         listenv_0.7.0        promises_1.0.1       ggrepel_0.8.1       
+[61] crayon_1.3.4         deldir_0.1-22        miniUI_0.1.1.1       lattice_0.20-38      splines_3.6.1       
+[66] tensor_1.5           pillar_1.4.2         igraph_1.2.4.1       future.apply_1.3.0   reshape2_1.4.3      
+[71] codetools_0.2-16     leiden_0.3.1         glue_1.3.1           lsei_1.2-0           data.table_1.12.8   
+[76] vctrs_0.3.8          png_0.1-7            httpuv_1.5.1         gtable_0.3.0         RANN_2.6.1          
+[81] purrr_0.3.4          polyclip_1.10-0      tidyr_1.0.2          scattermore_0.7      future_1.14.0       
+[86] assertthat_0.2.1     ggplot2_3.3.5        rsvd_1.0.2           mime_0.7             xtable_1.8-4        
+[91] later_0.8.0          survival_3.1-7       viridisLite_0.3.0    tibble_2.1.3         cluster_2.1.0       
+[96] globals_0.12.4       fitdistrplus_1.0-14  ROCR_1.0-7   
