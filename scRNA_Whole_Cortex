@@ -1,0 +1,250 @@
+library(cowplot)
+library(dplyr)
+library(Matrix)
+library(Seurat)
+library(RColorBrewer)
+library(harmony)
+
+####loading####
+#Aldh1l1;Ptbp1;Sun1
+#Female
+#Cortex whole
+TKC5 <- Read10X_h5("Ptbp1/Brain_Matrix_file/Cortex/TKC5/TKC5_filtered_feature_bc_matrix.h5")
+TKC6 <- Read10X_h5("Ptbp1/Brain_Matrix_file/Cortex/TKC6/TKC6_filtered_feature_bc_matrix.h5")
+TKC7 <- Read10X_h5("Ptbp1/Brain_Matrix_file/Cortex/TKC7/TKC7_filtered_feature_bc_matrix.h5")
+
+#adding column names to avoid barcode clash
+colnames(TKC5) = paste0("TKC5_", colnames(TKC5))
+colnames(TKC6) = paste0("TKC6_", colnames(TKC6))
+colnames(TKC7) = paste0("TKC7_", colnames(TKC7))
+
+#Create Seurat object. Cutoff 500 genes in 5 cells
+TKC5 <- CreateSeuratObject(counts = TKC5, project = "Ptbp1_WT_Ctx", min.cells = 5, min.features = 500)
+TKC6 <- CreateSeuratObject(counts = TKC6, project = "Ptbp1_HET_Ctx", min.cells = 5, min.features = 500)
+TKC7 <- CreateSeuratObject(counts = TKC7, project = "Ptbp1_HOM_Ctx", min.cells = 5, min.features = 500)
+
+#Filter 
+TKC5 <- subset(TKC5, subset = nCount_RNA > 2000) 
+TKC6 <- subset(TKC6, subset = nCount_RNA > 2000)
+TKC7 <- subset(TKC7, subset = nCount_RNA > 2000)
+
+###merge####
+P_Ctx <- merge(x = TKC5, y = list(TKC6, TKC7))
+rm(TKC5)
+rm(TKC6)
+rm(TKC7)
+P_Ctx <- RenameIdents(P_Ctx, "TKC5" = "WT_Ctx", "TKC6" = "HET_Ctx", "TKC7" = "HOM_Ctx")
+P_Ctx <- AddMetaData(P_Ctx, P_Ctx@active.ident, "Genotype")
+Idents(P_Ctx) <- "Genotype"
+
+#check distribution of Mitochondrial genes, Ribosomal genes, and number of UMI (=nCount_RNA)
+P_Ctx[["percent.mt"]] <- PercentageFeatureSet(P_Ctx, pattern = "^mt-")
+P_Ctx[["percent.RPS"]] <- PercentageFeatureSet(P_Ctx, pattern = "^Rps")
+P_Ctx[["percent.RPL"]] <- PercentageFeatureSet(P_Ctx, pattern = "^Rpl")
+
+my_levels <- c("WT_Ctx", "HET_Ctx", "HOM_Ctx")
+P_Ctx@active.ident <- factor(x = P_Ctx@active.ident, levels = my_levels)
+
+#filter some rough values
+P_Ctx <- subset(P_Ctx, subset = percent.mt <50)
+P_Ctx <- subset(P_Ctx, subset = percent.RPS <20)
+
+VlnPlot(P_Ctx, features = c("nCount_RNA","nFeature_RNA",
+                            "percent.mt","percent.RPS","percent.RPL"),
+        pt.size = 0)
+
+####processing####
+P_Ctx <- SCTransform(P_Ctx, vars.to.regress = c("nCount_RNA","nFeature_RNA"))
+P_Ctx <- RunPCA(P_Ctx, npcs = 50, ndims.print = NA, verbose = F)
+P_Ctx <- RunHarmony(P_Ctx, group.by.vars = "orig.ident", assay.use = "SCT", plot.convergence = T)
+P_Ctx <- RunUMAP(P_Ctx, reduction = "harmony", dims = 1:20,
+                 n.neighbours = 10L, min.dist = 0.01, spread = 1)
+DimPlot(P_Ctx, reduction = "umap", label = F,pt.size = 0.5, cols = , 
+        split.by = "Genotype", ncol = 2) + NoLegend()
+
+P_Ctx <- FindNeighbors(P_Ctx, dims = 1:20, reduction = "harmony")
+P_Ctx <- FindClusters(P_Ctx, resolution = 0.8) #SCT_snn_res.0.8
+DimPlot(P_Ctx, reduction = "umap", label = T, pt.size = 0.5) + NoLegend()
+
+markers <- FindAllMarkers(P_Ctx, test.use = "wilcox",
+                          logfc.threshold = 0.5,
+                          min.pct = 0.2, verbose = T)
+write.csv(markers, file = "Ptbp1/CSV/DEG_P_Ctx.csv")
+
+####1st Cleanup####
+#0 Endothelial
+#1 Astrocyte
+#2 Astrocyte
+#3 Neuron
+#4 Oligodendrocyte
+#5 Pericyte
+#6 Microglia
+#7 Microglia
+#8 Neuron
+#9 Neuron
+#10 Microglia
+#11 Astrocyte
+#12 Oligodendrocyte
+#13	Endothelial
+#14 Astrocyte
+#15 OPC
+#16 Neuron
+#17 NSC
+#18 Neuron
+#19 VSMC
+#20 Blood cell
+#21 Neuron
+#22 Doublet
+#23	Endothelial
+#24 Ependymal
+#25 Neuron
+#26 BAM
+#27 MSC
+#28	Endothelial
+#29 NSC
+#30 Doublet
+#31 Doublet
+#32 BAM
+#33 Doublet
+#34 Doublet
+#35 Doublet
+#36 Doublet
+#37 MSC
+#38 Doublet
+#39 Neuron
+#40 Doublet
+#41 Doublet
+#42 Doublet
+
+P_Ctx <- subset(P_Ctx, idents = c("0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", 
+                                  "12", "13", "14", "15", "16", "17", "18", "19", "20", "21",  
+                                  "23", "24", "25", "26", "27", "28", "29", "32",  
+                                  "37", "39")) 
+P_Ctx <- SCTransform(P_Ctx, vars.to.regress = c("nCount_RNA","nFeature_RNA"))
+P_Ctx <- RunPCA(P_Ctx, npcs = 50, ndims.print = NA, verbose = F)
+P_Ctx <- RunHarmony(P_Ctx, group.by.vars = "orig.ident"
+                    , assay.use = "SCT", plot.convergence = T)
+P_Ctx <- RunUMAP(P_Ctx, reduction = "harmony", dims = 1:20,
+                 n.neighbours = 10L, min.dist = 0.01, spread = 1)
+DimPlot(P_Ctx, label = T) + NoLegend()
+
+P_Ctx <- RenameIdents(P_Ctx,"0"= "Endothelial", "1" = "Astrocyte", "2" = "Astrocyte", "3"= "Neuron",
+                      "4"= "Oligodendrocyte", "5"= "Pericyte", "6"= "Microglia", "7"= "Microglia", "8"= "Neuron",
+                      "9"= "Neuron", "10"= "Microglia", "11" = "Astrocyte", 
+                      "12"= "Oligodendrocyte", "13"= "Endothelial", "14" = "Astrocyte", "15" = "OPC",
+                      "16"= "Neuron", "17" = "NSC", "18"= "Neuron",
+                      "19"= "VSMC", "20"= "Blood cell", "21"= "Neuron",  
+                      "23"= "Endothelial", "24"= "Ependymal", "25"= "Neuron",
+                      "26"= "BAM", "27"= "MSC", "28"= "Endothelial",
+                      "29" = "NSC", "32"= "BAM",  
+                      "37"= "MSC", "39"= "Neuron" )
+
+Group <- sort(levels(P_Ctx@active.ident))
+P_Ctx <- AddMetaData(P_Ctx, P_Ctx@active.ident, "Clusters")
+P_Ctx@active.ident <- factor(x = P_Ctx@active.ident, levels = Group)
+P_Ctx@meta.data$Clusters <- factor(x = P_Ctx@meta.data$Clusters, levels = Group)
+DimPlot(P_Ctx, reduction = "umap", label = T, pt.size = 0.5) + NoLegend() + NoAxes()
+
+save(P_Ctx, file = "Ptbp1/Robj/Ptbp1_Ctx.Robj")
+
+
+####Astrocyte####
+P_Ctx <- subset(P_Ctx, idents = c('Astrocyte') )
+P_Ctx <- SCTransform(P_Ctx, vars.to.regress = c("nCount_RNA","nFeature_RNA"))
+P_Ctx <- RunPCA(P_Ctx, npcs = 50, ndims.print = NA, verbose = F)
+P_Ctx <- RunHarmony(P_Ctx, group.by.vars = "orig.ident", assay.use = "SCT")
+P_Ctx <- RunUMAP(P_Ctx, reduction = "harmony", dims = 1:10,
+                 n.neighbours = 10L, min.dist = 0.01, spread = 1)
+P_Ctx <- FindNeighbors(P_Ctx, dims = 1:10, reduction = "harmony")
+P_Ctx <- FindClusters(P_Ctx, resolution = 0.3) #SCT_snn_res.0.8
+DimPlot(P_Ctx, reduction = "umap", label = T, pt.size = 0.5, split.by = "Genotype") + NoLegend()
+
+markers <- FindAllMarkers(P_Ctx, test.use = "wilcox",
+                          logfc.threshold = 0.5,
+                          min.pct = 0.2, verbose = T)
+write.csv(markers, file = "Ptbp1/CSV/DEG-initial-Ctx_Astro.csv")
+
+#4 Neuron doublet
+#5 Immune doublet
+
+P_Ctx <- subset(P_Ctx, idents = c("0", "1","2", "3"))
+P_Ctx <- SCTransform(P_Ctx, vars.to.regress = c("nCount_RNA","nFeature_RNA"))
+P_Ctx <- RunPCA(P_Ctx, npcs = 50, ndims.print = NA, verbose = F)
+P_Ctx <- RunHarmony(P_Ctx, group.by.vars = "Genotype", assay.use = "SCT")
+P_Ctx <- RunUMAP(P_Ctx, reduction = "harmony", dims = 2:15,
+                 n.neighbours = 10L, min.dist = 0.01, spread = 1)
+DimPlot(P_Ctx, reduction = "umap", label = , pt.size = 0.5)
+
+P_Ctx <- FindNeighbors(P_Ctx, dims = 1:15, reduction = "harmony")
+P_Ctx <- FindClusters(P_Ctx, resolution = 0.2) #SCT_snn_res.0.8
+
+DimPlot(P_Ctx, reduction = "umap", label = T, pt.size = 0.5) + NoLegend()
+markers <- FindAllMarkers(P_Ctx, test.use = "wilcox",
+                          logfc.threshold = 0.5,
+                          min.pct = 0.2, verbose = T)
+write.csv(markers, file = "Ptbp1/CSV/DEG-initial-Ctx_Astro.csv")
+
+DimPlot(P_Ctx, reduction = "umap", label = , pt.size = 0.5, split.by = "Genotype")
+
+#4 junk 
+P_Ctx <- subset(P_Ctx, idents = c("0", "1","2","3"))
+P_Ctx <- SCTransform(P_Ctx, vars.to.regress = c("nCount_RNA","nFeature_RNA"))
+P_Ctx <- RunPCA(P_Ctx, npcs = 50, ndims.print = NA, verbose = F)
+P_Ctx <- RunHarmony(P_Ctx, group.by.vars = "Genotype", assay.use = "SCT")
+P_Ctx <- RunUMAP(P_Ctx, reduction = "harmony", dims = 2:15,
+                 n.neighbours = 10L, min.dist = 0.01, spread = 1)
+DimPlot(P_Ctx, reduction = "umap", label = , pt.size = 0.5)
+
+P_Ctx <- FindNeighbors(P_Ctx, dims = 1:15, reduction = "harmony")
+P_Ctx <- FindClusters(P_Ctx, resolution = 0.2) #SCT_snn_res.0.8
+
+DimPlot(P_Ctx, reduction = "umap", label = T, pt.size = 0.5) + NoLegend()
+markers <- FindAllMarkers(P_Ctx, test.use = "wilcox",
+                          logfc.threshold = 0.5,
+                          min.pct = 0.2, verbose = T)
+write.csv(markers, file = "Ptbp1/CSV/DEG-initial-Ctx_Astro.csv")
+
+DimPlot(P_Ctx, reduction = "umap", label = , pt.size = 0.5, split.by = "Genotype")
+
+save(P_Ctx, file = "Ptbp1/Robj/Ptbp1_Ctx_Astrocyte.Robj")
+
+> sessionInfo()
+R version 3.6.1 (2019-07-05)
+Platform: x86_64-w64-mingw32/x64 (64-bit)
+Running under: Windows 10 x64 (build 19044)
+
+Matrix products: default
+
+locale:
+[1] LC_COLLATE=English_United States.1252  LC_CTYPE=English_United States.1252   
+[3] LC_MONETARY=English_United States.1252 LC_NUMERIC=C                          
+[5] LC_TIME=English_United States.1252    
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+[1] harmony_1.0        Rcpp_1.0.7         RColorBrewer_1.1-2 Seurat_3.2.3       Matrix_1.2-17      dplyr_0.8.3       
+[7] cowplot_1.0.0     
+
+loaded via a namespace (and not attached):
+ [1] nlme_3.1-142         bitops_1.0-6         matrixStats_0.54.0   RcppAnnoy_0.0.18     httr_1.4.1          
+ [6] sctransform_0.3.2    tools_3.6.1          R6_2.4.0             irlba_2.3.3          rpart_4.1-15        
+[11] KernSmooth_2.23-16   uwot_0.1.10          mgcv_1.8-31          lazyeval_0.2.2       colorspace_1.4-1    
+[16] withr_2.1.2          npsurv_0.4-0         tidyselect_0.2.5     gridExtra_2.3        compiler_3.6.1      
+[21] plotly_4.9.0         labeling_0.3         caTools_1.17.1.2     scales_1.0.0         lmtest_0.9-37       
+[26] spatstat.data_2.1-0  ggridges_0.5.1       pbapply_1.4-1        spatstat_1.64-1      goftest_1.2-2       
+[31] stringr_1.4.0        digest_0.6.20        spatstat.utils_2.2-0 pkgconfig_2.0.2      htmltools_0.5.1.1   
+[36] htmlwidgets_1.3      rlang_0.4.10         rstudioapi_0.11      shiny_1.3.2          zoo_1.8-6           
+[41] jsonlite_1.6.1       ica_1.0-2            gtools_3.8.1         magrittr_1.5         patchwork_1.0.0.9000
+[46] munsell_0.5.0        abind_1.4-5          reticulate_1.13      lifecycle_0.1.0      stringi_1.4.3       
+[51] MASS_7.3-51.4        gplots_3.0.4         Rtsne_0.15           plyr_1.8.4           grid_3.6.1          
+[56] parallel_3.6.1       gdata_2.18.0         listenv_0.7.0        promises_1.0.1       ggrepel_0.8.1       
+[61] crayon_1.3.4         deldir_0.1-22        miniUI_0.1.1.1       lattice_0.20-38      splines_3.6.1       
+[66] tensor_1.5           pillar_1.4.2         igraph_1.2.4.1       future.apply_1.3.0   reshape2_1.4.3      
+[71] codetools_0.2-16     leiden_0.3.1         glue_1.3.1           lsei_1.2-0           data.table_1.12.8   
+[76] vctrs_0.3.8          png_0.1-7            httpuv_1.5.1         gtable_0.3.0         RANN_2.6.1          
+[81] purrr_0.3.4          polyclip_1.10-0      tidyr_1.0.2          scattermore_0.7      future_1.14.0       
+[86] assertthat_0.2.1     ggplot2_3.3.5        rsvd_1.0.2           mime_0.7             xtable_1.8-4        
+[91] later_0.8.0          survival_3.1-7       viridisLite_0.3.0    tibble_2.1.3         cluster_2.1.0       
+[96] globals_0.12.4       fitdistrplus_1.0-14  ROCR_1.0-7   
